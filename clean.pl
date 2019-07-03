@@ -170,6 +170,14 @@ foreach $i (0 .. $#ARGV) {
 	s/ Objer/ Obier/g;
 	s/OBJER/OBIER/g;
 
+	#Most casses of interj would be interje*, but we need to remember interius, interior 
+	s/interju/interiu/g;
+	s/ Interju/ Interiu/g;
+	s/INTERJU/INTERIU/g;
+	s/interjo/interio/g;
+	s/ Interjo/ Interio/g;
+	s/INTERJO/INTERIO/g;
+
 	# Odds and ends
 	s/ Nammej([$lcv])/ Nammei$1/g;
 	
