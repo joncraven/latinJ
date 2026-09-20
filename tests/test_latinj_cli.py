@@ -162,6 +162,7 @@ class TestMemoRegressionBattery:
         assert self.one("reicit") == "rejicit"
         assert self.one("reiecit") == "rejecit"
         assert self.one("traiectum") == "trajectum"
+        assert self.one("traiecit") == "trajecit"
         assert self.one("traicit") == "trajicit"
         assert self.one("traicio") == "trajicio"  # trans+iacio compound
 

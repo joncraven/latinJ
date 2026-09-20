@@ -123,6 +123,7 @@
     {"id": "reiec", "pattern": "\\breiec", "replace": "rejec"},
     {"id": "reici", "pattern": "\\breici", "replace": "rejici"},
     {"id": "traiect", "pattern": "\\btraiect", "replace": "traject"},
+    {"id": "traieci", "pattern": "\\btraieci", "replace": "trajeci"},
     {"id": "traici", "pattern": "\\btraici", "replace": "trajici"}
   ]
 }
