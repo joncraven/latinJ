@@ -42,13 +42,20 @@ $ latinj --log audit.jsonl FILE   # one JSON line per substitution, for QA
 | auditability | `--log` writes every substitution as JSONL |
 
 Rules live in `orthography/rules.json` — new corrections are data, not code.
+The formal rule-set document (`docs/orthography-ruleset.formal.yaml`, approved
+in t_d270dcf7) is the spec; every example pair it cites is pinned as a test
+(`tests/test_ruleset_examples.py`), and the parent deliverable `ruleset.json`
+carries the same five rule arrays (`exceptions`, `char_map`, `strip_combining`,
+`regex`, `word_regex`) as `orthography/rules.json` v1.2.0 — verified identical.
 
 ### Development
 
 ```console
 $ python3 -m venv .venv && .venv/bin/pip install pytest
-$ .venv/bin/python -m pytest tests/ -q     # 53 tests
+$ .venv/bin/python -m pytest tests/ -q     # 63 tests
 ```
 
 `tests/test_orthography_normalize.py` is the ported engine suite;
-`tests/test_latinj_cli.py` is the v2 CLI + regression battery.
+`tests/test_latinj_cli.py` is the v2 CLI + regression battery;
+`tests/test_ruleset_examples.py` replays every example pair in the formal
+rule-set through the CLI (generated from the YAML spec).
