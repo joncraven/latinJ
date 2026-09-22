@@ -1,0 +1,519 @@
+meta:
+  name: Latin orthography fixer - formal rule set (t_d270dcf7 deliverable)
+  decision_memo: 'docs/orthography-compare-decision-memo.md (t_32eefe2f, 2026-09-19, decision: option (b))'
+  decision: 'Option (b): adopt the local Python pipeline as base; backfill the Perl script''s rule knowledge as JSON data;
+    drop all Perl mechanics. Local wins structurally; Perl defects are architectural and cannot be backfilled by copying regexes.
+    Perl is a strictly-worse, structurally-incompatible tool.'
+  why_not_perl_base: Perl I/O is HTML-in/HTML-out (fixed/ dir, forced .html rename, cwd-only paths, per-line leading-space
+    hack), case-smashes via /i flag (vbi->Ubi), emits HTML entities not Unicode, mangles EOL Roman numerals (IV->JU, MVII->MUII),
+    has no macron/NFC handling, and rewrites CSS/attributes. Adopting it means stripping almost all of it and re-deriving
+    the Python. (memo section 0 and section 3)
+  why_not_merge: No mechanisms in Perl worth importing - only a handful of lexical/prefix rules which are one-line JSON data
+    additions. A merge inflates scope and reintroduces the Perl bug surface. (memo section 3, option c = NO)
+  target_language: python3
+  target_language_rationale: 'The latinJ repo is Python (latinj.py + scripts/normalize_orthography.py, v2 CLI on branch orthography-v2).
+    Memo mandates: keep language consistent with the chosen base. Perl clean.pl is retained for reference only and receives
+    no further development.'
+  engine_file: latinJ/orthography/normalize.py
+  rules_data_file: orthography/rules.json
+  ruleset_version: 1.2.0
+  rules_data_reference: ruleset.json (machine-facing, coder-ingestible) carries the full char_map/regex/word_regex/strip_combining/exceptions
+    arrays pulled straight from orthography/rules.json v1.2.0. See also latinJ/orthography/rules.json (the canonical copy).
+  self_contained: true
+  acceptance: Every rule category in the decision memo is represented in adopted_rules or dropped_rules; each adopted rule
+    has >=1 positive and >=1 negative example. This document is self-contained so a coder reads it + ruleset.json + normalize.py
+    and has everything to implement the fixer.
+  rule_counts: &id001
+    exceptions: 10
+    char_map: 30
+    strip_combining: 2
+    regex: 3
+    word_regex: 70
+algorithm:
+  normalize_text: 'Stages on the (already de-tagged, for HTML input) Latin string:'
+  stage_order:
+  - '0. NFC-normalise the whole string (unifies NFD diacritics: bare vowel + combining-macron -> precomposed form).'
+  - '1. protect_exceptions: for each word in `exceptions`, match case-insensitively as a word-START prefix (re.escape + \b,
+    longest word first) and replace its occurrences with a \x00EXCn\x00 placeholder. Position-free so declined forms (Israelis,
+    Michaelis) are also protected.'
+  - '2. strip_combining: delete combining macron U+0304 and combining breve U+0306 (longest `from` first).'
+  - '3. char_map: 1:1 character substitutions, longest `from` first. Handles ae/oe/e-caudata ligatures -> entities or spelled-out
+    letters; precomposed macrons/breves -> bare letter (case preserved by table).'
+  - '4. regex: literal substitutions on text nodes, NOT case-preserving, each entity-guarded with (?<!&). Currently: AE/Ae/ae
+    -> &AElig;/&aelig;.'
+  - '5. word_regex: case-INSENSITIVE, case-PRESERVING word/stem rewrites (the j-family, maior/peior, Troia/Trajan, j-compounds).
+    Patterns use \b for word boundaries.'
+  - '6. restore_exceptions: swap \x00EXCn\x00 placeholders back to the original (untouched) text. Every rule that ran over
+    a protected word-start skipped its replacement.'
+  html_awareness: For HTML input, stages 0-6 run on text nodes only. A single splitter (regex for <!-- -->, <script>...</script>,
+    <style>...</style>, <tag ...>) peels off tag/attr/script/style blocks; they are copied verbatim, never rewritten (memo
+    row 26 - key differentiator vs Perl).
+  case_preserve_helper: 'preserve_case(original, replacement): if replacement is all-lowercase, copy the match''s case via
+    .upper() for all-caps or .capitalize() for Title-case. This is why Iam->Jam, Iudex->Judex, MAIOR->MAJOR.'
+  audit: 'Every substitution where match != replacement is appended to a JSONL log: {rule_id, match, replacement, index}.
+    Idempotency: a second pass produces no new log entries and identical text.'
+adopted_rules:
+- id: 1
+  memo_ref: section 1 / row 3
+  name: NFC normalisation
+  target: top of normalize_text()
+  description: 'NFC-normalise input before any rule, so NFD forms (bare vowel + combining diacritic) unify to precomposed
+    and are handled consistently by char_map / strip_combining. Fixes the 09-16 NFD diacritic-corruption bug: bare ''a'' +
+    COMBINING-DIAERESIS + ''r'' would otherwise corrupt the ae-ligature intermediate.'
+  positive_examples:
+  - input: māter
+    output: mater
+    note: NFD 'm'+ 'a' + COMBINING-MACRON + 'ter' -> NFC precomposed 'māter' -> strip_combining drops U+0301 -> 'mater'.
+      Full-pipeline positive. Confirmed by probe.py.
+  - input: Māter
+    output: Mater
+    note: Precomposed 'Māter' -> char_map length_a_macron removes the macron -> 'Mater'. Confirmed by probe.py.
+  negative_examples:
+  - input: ma
+    output: ma
+    note: No combining or precomposed diacritics; NFC is a no-op.
+- id: 2
+  memo_ref: section 1 / row 13 / section 5
+  name: Protect exception word-starts (Hebrew/biblical names)
+  target: before ae-ligature stage
+  description: 'A position-free, case-insensitive stem-prefix guard so that ae-inside a Hebrew/biblical name is NOT ligatured.
+    Exception list is grown as QA (t_5294b9ae / t_32eefe2f) surfaces more declined forms. v1.2.0 list (10 entries):'
+  exceptions_in_v1_2:
+  - Israel
+  - Israhel
+  - Ismael
+  - Ishmael
+  - Michael
+  - Raphael
+  - Gabriel
+  - Nathanael
+  - Emmanuel
+  - Daniel
+  positive_examples:
+  - input: Israel
+    output: Israel
+    note: Protected. ae inside 'Israel' stays 'ae', not &aelig;. Confirmed by probe.py.
+  - input: Israelis et Michaelis
+    output: Israelis et Michaelis
+    note: Declined forms protected by stem-prefix. Real test pair (latinJ test_declined_hebrew_names_are_not_ligatured).
+  - input: Praesidium et Israel
+    output: Pr&aelig;sidium et Israel
+    note: 'Mixed: ''praesidium'' ae ligatures; ''Israel'' ae does not. Same sentence. Confirmed by probe.py.'
+  - input: Daniel et Ismael et Raphael
+    output: Daniel et Ismael et Raphael
+    note: All three are in the exception list; none ligatured or j-converted. Confirmed by probe.py.
+  negative_examples:
+  - input: Isaiah
+    output: Isaiah
+    note: NOT in the v1.2.0 exception list; not protected. It is also not ae-spelled, so no ae-ligature fires. A coder adds
+      'Isaiah' to `exceptions` only if QA shows it needs protection.
+- id: 3
+  memo_ref: memo row 18 / row 23
+  name: Strip combining macron and breve
+  target: strip_combining (JSON, 2 entries)
+  description: Delete combining macron U+0304 and combining breve U+0306. The underlying precomposed vowel letter is what
+    NFC left in stage 0, so this cleanly removes length marks.
+  positive_examples:
+  - input: Māter rēgina āmo
+    output: Mater regina amo
+    note: Char_map length_a_macron / length_e_macron / length_i_macron / length_a_breve remove precomposed diacritics. Real
+      test pair (latinJ test_macrons_and_breves_stripped). Confirmed by probe.py.
+  negative_examples:
+  - input: consulto
+    output: consulto
+    note: No combining macrons or breves; no-op.
+- id: 4
+  memo_ref: memo rows 12, 19, 23
+  name: Character substitution map (char_map, 30 entries)
+  target: char_map (JSON)
+  description: '1:1 character substitutions, applied longest-`from`-first. Four classes: (a) ae-ligature variants (ae/ae/ǽ/ǣ
+    + upper Æ/ȼ) -> &aelig;/&AElig; and &aelig; for ǽ/ǣ; (b) oe-ligature (œ/Œ) -> spelled ''oe''/''Oe'', &oelig; is NEVER
+    emitted (memo row 19); (c) e-caudata (ę/Ę) -> ''ae''/''Ae''; (d) 14 precomposed macron entries (āēīōūȳ ĀĒĪŌŪȲ) and 14
+    breve entries (ăĕĭŏŭ ĂĔĬŎŬ) -> bare letter, case preserved by the table itself. Total: 30 entries.'
+  policy_notes:
+  - ae in ligature form ALWAYS becomes &aelig;/&AElig;, never the spelled digraph 'ae' (site standard; memo row 12).
+  - oe ligature expands to spelled 'oe'/'Oe'; &oelig; is never emitted (memo row 19).
+  - 'e-caudata is distinct from ae-ligature: ''ę'' -> ''ae'' in char_map, then ae->&aelig; in the regex stage, so ''ędes''
+    -> ''ae'' -> ''&aelig;des'' across stages.'
+  - All 28 macron/breve entries collapse to the bare vowel; this is the 'vowel-length marks stripped' rule (memo row 18).
+  positive_examples:
+  - input: Cæsar
+    output: C&aelig;sar
+    note: Unicode 'æ' -> &aelig; via ligature_ae_lower. Real test pair (latinJ test_unicode_ae_becomes_entity). Confirmed
+      by probe.py.
+  - input: coelum poena
+    output: coelum poena
+    note: Spelled 'oe' stays 'oe' - NOT &oelig; (memo row 19). No change because char_map has no 'oe' entry that fires in
+      this direction. Confirmed by probe.py.
+  - input: lœ
+    output: loe
+    note: Unicode 'œ' -> 'oe' via ligature_oe_lower. Confirmed by probe.py.
+  - input: Māter rēgina āmo
+    output: Mater regina amo
+    note: Precomposed macrons/breves stripped via char_map. Confirmed by probe.py.
+  - input: ędes
+    output: '&aelig;des'
+    note: e-caudata 'ę' -> 'ae' in char_map, then ae->&aelig; in regex stage. Real test pair (latinJ test_e_caudata_becomes_aelig).
+      Confirmed by probe.py.
+  negative_examples:
+  - input: coepti
+    output: coepti
+    note: char_map 'oe' rule only fires on the œ codepoint (U+0153), not on spelled 'oe'; no change. Confirmed by probe.py.
+  - input: consulto
+    output: consulto
+    note: No macron or breve; no ae/oe ligature; no-op.
+- id: 5
+  memo_ref: memo row 12
+  name: ae digraph -> &aelig;/&AElig; (literal regex, entity-guarded)
+  target: regex (JSON, 3 entries)
+  description: 'Three literal regex rules, NOT case-preserving, each entity-guarded with (?<!&): ae_digraph_upper (AE -> &AElig;),
+    ae_digraph_title (Ae -> &AElig;), ae_digraph_lower (ae -> &aelig;). Handles the spelled ''ae'' digraph that char_map''s
+    ligature-codepoint path does not.'
+  positive_examples:
+  - input: praesidium caedem
+    output: pr&aelig;sidium c&aelig;dem
+    note: Lowercase ae -> &aelig; via ae_digraph_lower. Real test pair (latinJ test_spelled_ae_becomes_entity). Confirmed
+      by probe.py.
+  - input: Aequor
+    output: '&AElig;quor'
+    note: Title-case Ae -> &AElig; via ae_digraph_title. Real test pair (latinJ test_titlecase_ae_becomes_AElig). Confirmed
+      by probe.py.
+  - input: pr&aelig;sidium
+    output: pr&aelig;sidium
+    note: 'Idempotent: the (?<!&) guard prevents re-ligature of an existing &aelig; entity. Confirmed by probe.py.'
+  negative_examples:
+  - input: Israel
+    output: Israel
+    note: 'Protected in stage 1: the ae inside ''Israel'' is placeholdered before the ae regex runs, so it is not ligatured.
+      Confirmed by probe.py.'
+- id: 6
+  memo_ref: section 1 / row 1 / row 5 / row 6
+  name: Consonantal i -> j (word_regex, case-insensitive + case-preserving)
+  target: word_regex (JSON, 70 entries)
+  description: 'The ''j family'': consonantal ''i'' written as ''j''. Rules are case-insensitive and case-preserving (Iam->Jam,
+    Iudex->Judex, MAIOR->MAJOR). Stems are specific and QA-validated; NO generalised (prefix)i->j regex exists (invariant
+    no_generalised_prefix_j, memo section 4.1). Sub-groups present in v1.2.0: ia-/ei- prefixes (eius/huius/cuius + compounds:
+    eiusdem, eiusmod, huiusce, huiusmodi, cuiusque, etc.), assessment stems (maior, maius, peior, peius), i-stem families
+    (iud, iucund, iuss, iust, iuris, iure, iura, iusiur, ius, iub, iuxta, iuven, iuv, iug, iunius, iunx, ianuar, ieiun, iacere/iacio),
+    and the v1.2.0 backfill set (adic, adiu[v/t], conic, abic, abiec, obic, obie[c], inici[inie-c], reic, traje[ct/ci]).'
+  positive_examples:
+  - input: iam etiam iamque
+    output: jam etiam jamque
+    note: iam->jam, iamque->jamque; 'etiam' NOT j-converted. Real test pair (latinJ test_iam_to_jam_but_etiam_untouched).
+      Confirmed by probe.py.
+  - input: iussu iactabit coniurationem eius huius cuius maior
+    output: jussu jactabit conjurationem ejus hujus cujus major
+    note: 'One-sentence battery (latinJ test_iussu_iactabit_coniurationem): juss, jact, conjur, ejus, hujus, cujus, maior->major;
+      all case-preserved. Confirmed by probe.py.'
+  - input: Iam Iuppiter Iovi Ianuarias
+    output: Jam Juppiter Jovi Januarias
+    note: Title case preserved for every j-stem. Real test pair (latinJ). Confirmed by probe.py.
+  - input: iudicio iudicat iudicium iudicarit iudicarem iucundus
+    output: judicio judicat judicium judicarit judicarem jucundus
+    note: iud-stem family (~840 corpus hits per memo section 1). Real test pair (latinJ). Confirmed by probe.py.
+  - input: maius peius Troia ieiunium iusiurandum Ihesus
+    output: majus pejus Troja jejunium jusiurandum Jesus
+    note: 'Assessment stems, memo rows 3 & 6 (latinJ test_assessment_stems...): maius->majus, peius->pejus, Troia->Troja,
+      ieiunium->jejunium (NOT jeiunium), iusiurandum->jusiurandum, Ihesus->Jesus. Confirmed by probe.py.'
+  - input: traiectum
+    output: trajectum
+    note: 'v1.2.0 backfill: traiect->traject stem (QA-validated; b7bda42). Confirmed by probe.py.'
+  - input: conicio
+    output: conjicio
+    note: 'v1.2.0 backfill: conici->conjici. Confirmed by probe.py.'
+  - input: adic adicit
+    output: adjic adjicit
+    note: 'v1.2.0 backfill: adic+adiut -> adjic/adjut; ''adicat'' in same sentence stays as ''adicit'' (no generic ad-prefix
+      j-pass; adic/adiu/adiut are specific stems). Confirmed by probe.py.'
+  - input: abjic abjicat
+    output: abjic abjicat
+    note: 'v1.2.0 backfill: abic->abjic; ''abjic'' and ''abjicat'' are the target form, so they are idempotent on second pass.
+      Confirmed by probe.py.'
+  negative_examples:
+  - input: exieris
+    output: exieris
+    note: 'Real test pair (latinJ test_exieris_is_not_rewritten): ex- is eo/ire, NOT a j-stem; memo row 15: immune by omission.
+      Confirmed by probe.py.'
+  - input: init
+    output: init
+    note: 'Guard (parent t_6e9130f8 comment): ''init'' stays; the only ''ini'' rules are iniuss->injuss and iniur->injur,
+      neither matches ''init''. Confirmed by probe.py.'
+  - input: adeo
+    output: adeo
+    note: 'Guard (parent comment): ''adeo'' stays; ad+e has no vowel-initial ''i'', so no j-compound fires. Confirmed by probe.py.'
+  - input: perit
+    output: perit
+    note: 'Guard (parent comment): ''perit'' stays; per- is NOT in the QA-validated j-prefix set (memo section 4.1: no generalised
+      prefix regex). Confirmed by probe.py.'
+  - input: circumit
+    output: circumit
+    note: 'Guard (parent comment): ''circumit'' stays; circum- is NOT in the QA-validated j-prefix set. Confirmed by probe.py.'
+  - input: etiam
+    output: etiam
+    note: 'Guard (parent comment): ''etiam'' stays; et- is NOT a j-prefix. Confirmed by probe.py.'
+  - input: ivi
+    output: ivi
+    note: 'Guard (parent comment): ''ivi'' (perfect of eo) stays; memo row 15: no j-pass for eo/ire, immune by omission. Confirmed
+      by probe.py.'
+  - input: iens
+    output: iens
+    note: 'Guard (parent comment): ''iens'' stays (perfect of eo). Confirmed by probe.py.'
+  - input: interior
+    output: interior
+    note: 'Guard (parent comment): ''interior'' stays; Perl had ''interju->interiu'' undo rules but the Python engine has
+      no ''interj'' j-pathto undo, so ''interior''/''interius'' are never j-converted. Confirmed by probe.py.'
+  - input: interius
+    output: interius
+    note: 'Guard (parent comment): ''interius'' stays; same reasoning as ''interior''. Confirmed by probe.py.'
+- id: 7
+  memo_ref: memo row 7 / proper names / biblical j-stems
+  name: Proper-name and biblical consonantal i -> j (subset of word_regex)
+  target: word_regex subset (proper names)
+  description: 'Consonantal ''i'' inside proper/biblical names is written ''j'': iuppiter/iovi/iovis -> juppiter/jovi/jovis,
+    iohann -> johann, ihesu/iesu -> jesus, ioseph -> joseph, iuliu -> juliu, pompeiu -> pompeju; plus the assessment''s Troia
+    -> Troja and Traianus -> Trajanus (row 7). All case-preserving.'
+  rule_ids:
+  - troia
+  - traian
+  - iovis
+  - iovi
+  - iuppiter
+  - iohann
+  - ihesu
+  - iesu
+  - ioseph
+  - iuliu
+  - pompeiu
+  positive_examples:
+  - input: Iuppiter Iovi Iohann Ihesus Ioseph Pompeius
+    output: Juppiter Jovi Johann Jesus Joseph Pompejus
+    note: 'Consonantal i -> j in proper/biblical names, case preserved. Confirmed by probe.py: Iuppiter->Juppiter, Iovi->Jovi,
+      Iohann->Johann, Ihesus->Jesus, Ioseph->Joseph, pompeiu->pompeju in ''Pompeius''->''Pompejus''.'
+  - input: Troia Traianus
+    output: Troja Trajanus
+    note: Assessment stems (memo row 7). Confirmed by probe.py.
+  negative_examples:
+  - input: Israel
+    output: Israel
+    note: 'Protected by the exception list (adopted rule 2): not j-converted and not ae-ligatured. The negative case for this
+      category is exactly the names that must NOT change. Confirmed by probe.py.'
+- id: 8
+  memo_ref: section 4.2 / 4.3 / 4.4 - open QA-gated addenda
+  name: Conditional addenda (QA-gated, not yet in v1.2.0)
+  target: rules.json data additions pending t_5294b9ae QA
+  description: The decision memo flags three data additions that are GATED on corpus QA (t_5294b9ae), not unconditional. A
+    coder leaves the mechanism ready but does NOT add these rows until QA confirms them. Each is a one-line addition to `exceptions`
+    (ae_ligature guard) or `word_regex` (j-compound).
+  conditional_items:
+  - id: ae_exception_extension
+    memo_ref: section 4.2 / row 12
+    description: 'If QA shows aer*/aether*/aereus should stay spelled out (not ligatured to &aelig;), add ''aer'' to `exceptions`.
+      Mechanism already exists: position-free stem-prefix match. Today they are NOT in the list, so the ae regex ligatures
+      the digraph.'
+    example_today: aer -> &aelig;r (the 'ae' digraph is ligatured by ae_digraph_lower; the trailing 'r' stays). Confirmed
+      by probe.py/why_aer.py.
+    example_if_added: aer -> aer (stays spelled; the exception guard placeholder blocks the ae regex entirely)
+  - id: enclitic_compounds
+    memo_ref: section 4.3 / row 22
+    description: 'Add -que/-ne/-ve compound joins and iussior-type formations IF QA flags real corpus hits. Note: eiusmodi
+      and huiusmodi ARE already in v1.2.0 word_regex.'
+    example_today: regnaque -> regnaque (no -que rule in word_regex; stays as source)
+    example_if_added: regna + -que joined per QA decision
+  - id: hebrew_exception_extension
+    memo_ref: section 4.4 / row 13
+    description: Append Hebrew/declined forms QA surfaces (e.g. Gabrielis, Raphaelis) to `exceptions`. Each is a one-line
+      addition to the exceptions array; position-free mechanism already exists.
+    example_today: Gabrielis -> Gabrielis (no ae to ligature in 'Gabrielis'; stays as-is today even though it is not yet an
+      explicit exception entry)
+    example_if_added: Gabrielis -> explicitly protected from ae-ligature (one-line addition to exceptions array, defensive)
+  positive_examples:
+  - input: eiusmodi huiusmodi
+    output: ejusmodi hujusmodi
+    note: 'Compound forms already in v1.2.0 word_regex: eiusmod->ejusmod (stem) plus huiusmodi->hujusmodi (whole word). Confirmed
+      by probe.py.'
+  - input: Gabriel
+    output: Gabriel
+    note: Already in the exception list; stays spelled. Confirmed by probe.py.
+  negative_examples:
+  - input: aer
+    output: '&aelig;r'
+    note: 'Without an ''aer'' entry in the exception list, the ae digraph IS ligatured by ae_digraph_lower to &aelig; and
+      the trailing ''r'' stays, giving &aelig;r (the leading ''a'' is part of the matched digraph, not a leftover literal).
+      This is the exact today-behaviour. The positive side of the conditional addendum: add ''aer'' to exceptions and it stays
+      ''aer''. Confirmed by probe.py / why_aer.py.'
+  - input: regnaque
+    output: regnaque
+    note: No -que compound rule in v1.2.0 word_regex; 'regnaque' stays as source. Confirmed by probe.py.
+  - input: Gabrielis
+    output: Gabrielis
+    note: 'Confirmed by probe.py: ''Gabrielis'' stays ''Gabrielis'' (no ae to ligature; not yet an explicit exception entry,
+      but no change occurs).'
+dropped_rules:
+- memo_ref: section 5 / row 21
+  name: Punctuation restyle (Perl)
+  decision: DROP (NO-GO, out of scope).
+  description: 'Memo row 21: punctuation changes were assessed and marked NO-GO — the fixer must not alter punctuation.
+    Folded in per t_d270dcf7 review caveat so this document maps every memo row; acceptance mapping lived in that
+    task''s scripts/acceptance_audit.py.'
+  guard_tests:
+  - No rule in rules.json adds, removes, or changes punctuation.
+- memo_ref: section 5 / row 8 / row 17
+  name: V -> U vocalic conversion (Perl, with /i flag)
+  decision: DROP (NO-GO).
+  description: 'Perl''s V->U /gi case-smashes and breaks words (vbi -> Ubi) AND destroys EOL Roman numerals (IV -> JU, MVII
+    -> MUII, CVIII -> CUIII). The Python engine has NO V->U pass by design; u/v are left as the source (memo row 9: corpus
+    is mixed - ''voltus'' and ''vultus'' coexist). The CUI warning (row 17) is not needed: no V->U pass means no numeral mis-conversion.'
+  perl_bug_examples:
+  - input: vbi
+    perl_output: Ubi
+    python_output: vbi
+    note: 'Case-smash: Perl /i flag makes ''vbi'' -> ''Ubi''. Python: no rule touches ''vbi''; stays ''vbi''. Confirmed by
+      probe.py.'
+  - input: Anno IV
+    perl_output: Anno JU
+    python_output: Anno IV
+    note: 'EOL numeral destruction (V->U pass). Python: ''IV'' stays ''IV''. Confirmed by probe.py.'
+  - input: MVII
+    perl_output: MUII
+    python_output: MVII
+    note: 'EOL numeral destruction. Python: ''MVII'' stays ''MVII''. Confirmed by probe.py.'
+  - input: CVIII
+    perl_output: CUIII
+    python_output: CVIII
+    note: 'EOL numeral destruction. Python: ''CVIII'' stays ''CVIII''. Confirmed by probe.py.'
+  guard_tests:
+  - '''vbi'' must NOT become ''Ubi'''
+  - '''ubi'' stays ''ubi'''
+  - Roman numerals 'Anno IV'/'MVII'/'CVIII'/'XCV' stay unchanged
+- memo_ref: section 5 / row 9 / row 10 / row 11
+  name: u -> v / prefix-u -> v / lexical u-v (Perl)
+  decision: DROP (NO-GO).
+  description: Perl has a vowel-initial 'u -> v', a 'prefix+u -> prefix+v' pass (aduenio -> advenio), and a growing lexical
+    u/v patch list. The decision is 'no u/v policy' because the corpus is mixed; converting is more likely to corrupt than
+    to help. No Python equivalent. 'voltus'/'servum' are corpus-guard examples (stays unchanged in Python).
+  perl_bug_examples:
+  - input: voltus
+    perl_output: 'vultus (ambiguous: which is correct?)'
+    python_output: voltus
+    note: No u->v pass in Python; 'voltus' stays 'voltus' as source. Confirmed by probe.py.
+  - input: aduenio
+    perl_output: advenio
+    python_output: aduenio
+    note: Prefix u->v NOT in the Python engine; 'aduenio' stays as source. Confirmed by probe.py.
+  - input: servum
+    perl_output: servvm (over-eager)
+    python_output: servum
+    note: No u->v pass in Python; 'servum' stays 'servum'. Confirmed by probe.py.
+  guard_tests:
+  - '''voltus'' stays ''voltus'''
+  - '''servum'' stays ''servum'''
+  - '''aduenio'' stays ''aduenio'''
+- memo_ref: section 5 / row 15
+  name: Undo-j for eo/ire perfects (Perl, 5 explicit undo rules)
+  decision: DROP (not needed in Python).
+  description: Perl's j-pass is aggressive enough that it converts eo/ire perfects (iv(i/s), ien(s/t), objer, interju, interjo)
+    and then needs 5 explicit undo rules to repair its own damage. The Python engine has no generalised eo/ire j-pass, so
+    these perfects are immune by omission. Memo row 15.
+  perl_bug_examples:
+  - input: ivi
+    perl_before_undo: ivj (j-fire, then undone back to ivi)
+    python_output: ivi
+    note: Python never converts eo/ire perfects; 'ivi' stays. Confirmed by probe.py.
+  - input: interius
+    perl_before_undo: interjus (j-fire, then undone back to interius)
+    python_output: interius
+    note: No 'interj' j-pass in Python; 'interius' stays. Confirmed by probe.py.
+  guard_tests:
+  - '''ivi'' stays ''ivi'''
+  - '''iens'' stays ''iens'''
+  - '''interior'' stays ''interior'''
+  - '''interius'' stays ''interius'''
+- memo_ref: section 5 / row 16
+  name: Nammei one-off patch (Perl)
+  decision: DROP (NO-GO, no corpus evidence).
+  description: A single 'Nammej -> Nammei' repair with no corpus evidence. Not carried into the Python engine. No 'Nammej'
+    pattern exists in rules.json.
+  perl_bug_examples:
+  - input: Nammei
+    perl_output: Nammej (then undone)
+    python_output: Nammei
+    note: No 'Nammej' rule in Python; nothing to fix or undo. Confirmed by probe.py.
+  guard_tests:
+  - No 'Nammej' pattern in rules.json
+- memo_ref: section 5 / row 24
+  name: HTML restyle for latin.craven.fr (Perl href/class substitutions)
+  decision: DROP (out of scope; already done corpus-wide elsewhere).
+  description: Perl rewrites href, class, and other HTML attributes for the reading site (latin.craven.fr). This is a site
+    task orthogonal to Latin orthography, and is already done corpus-wide in a separate task. The orthography fixer must NOT
+    alter any HTML tag/attribute (invariant html_aware). See invariant html_aware.
+  perl_bug_examples:
+  - input: <a href="http://www.thelatinlibrary.com/cicero/praesidium.html">praesidium</a>
+    perl_output: <a href="http://latin.craven.fr/cicero/praesidium.html">pr&aelig;sidium</a>
+    python_output: <a href="http://www.thelatinlibrary.com/cicero/praesidium.html">pr&aelig;sidium</a>
+    note: 'Python: only the text node ''praesidium'' is rewritten to ''pr&aelig;sidium'' via ae-ligature; the href attribute
+      is left intact. Confirmed by battery3.py HTML test.'
+  guard_tests:
+  - href/class/attributes never rewritten — see invariant html_aware and battery3.py HTML test pair
+- memo_ref: section 5 / misc + section 0
+  name: fixed/ dir, forced .html rename, cwd-only I/O, per-line leading-space hack, /i case-smash
+  decision: DROP (structural — conflicts with the epic's raw-in/raw-out filter).
+  description: 'Perl''s I/O model: a mandatory ''fixed/'' subdirectory, output forced to .html, input read only from the CWD,
+    and a leading space prepended to every line. None of this is compatible with a raw-in/raw-out CLI filter (stdin -> stdout,
+    --style, in-place -i, JSONL --log), which is what the epic and t_6e9130f8 require. The Python CLI implements the correct
+    I/O shape (commit 8c4e584 on orthography-v2).'
+  perl_bug_examples:
+  - input: 'stdin: ''iam maior praesidium''
+
+      (perl: fixed/iam.html written with leading space)'
+    perl_output: ' ''jam major praesidium'' (leading space, forced fixed/iam.html)'
+    python_output: jam major pr&aelig;sidium (stdout, clean, no leading space, no fixed/ dir)
+    note: Perl prepends a space and forces fixed/*.html; the Python CLI is a clean filter with no leading-space hack and no
+      forced output dir. Confirmed by parent t_6e9130f8 spark comment on commit 8c4e584.
+  guard_tests:
+  - No 'fixed/' dir created
+  - No forced '.html' rename
+  - No per-line space injection
+  - stdin -> stdout filter works
+  - idempotent second pass
+open_items_carried_to_t_6e9130f8:
+- id: output_form
+  memo_ref: section 6 / row 13-area
+  question: 'Default output form: HTML entity (&aelig;) or Unicode (æ)?'
+  recommended: Default = entity (&aelig;) = latin.craven.fr site standard, matching the 24+ passing latinJ tests. Expose --style
+    unicode|entity. Per parent t_6e9130f8 spark comment, latinj v2 CLI resolves this without breaking either consumer.
+- id: stdin_stdout
+  memo_ref: section 4.5 / section 6
+  question: Is a stdin/stdout raw-filter mode implemented?
+  recommended: Yes — stdin -> stdout, files -> stdout, in-place -i, --style, --log JSONL. Already on orthography-v2 (commit
+    8c4e584).
+- id: pipeline_provenance
+  memo_ref: section 6 / section 7
+  question: Where does the orthography/ pipeline live?
+  recommended: On branch wt/t_9bc32c48 (HEAD ff3c7f3), NOT main. t_6e9130f8 first ports wt/t_9bc32c48 into latinJ, then applies
+    section 4. Confirmed in latinJ commit ef185c4.
+acceptance_composite:
+  input: Iam David, fili Israel, quis est maior omnibus? Cuius ieiunium et iusiurandum, traiecit MVII.
+  expected_output: Jam David, fili Israel, quis est major omnibus? Cujus jejunium et jusiurandum, trajecit MVII.
+  note: 'Single sentence exercises: case-preserve (Iam->Jam), exception (Israel un-ligatured), maior->major, Cuius->Cujus,
+    ieiunium->jejunium (NOT jeiunium), iusiurandum->jusiurandum (case-preserving, NOT Jusiurandum), traiect->trajecit (b7bda42
+    perfect stem), and ''MVII'' left intact (no V->U bug). Confirmed by probe.py and battery3.py: match == True.'
+  idempotent: true
+  idempotency_evidence: 'scripts/battery3.py: normalize(normalize(input)) == normalize(input) confirmed OK. The composite
+    appears verbatim on t_6e9130f8 spark comment (run_id 307) and in latinJ commit ef185c4 README v2 section.'
+provenance:
+  decision_memo: docs/orthography-compare-decision-memo.md (t_32eefe2f, 2026-09-19, option (b))
+  perl_assessment: docs/latinJ-perl-orthography-assessment.md (t_faf215e7, 2026-09-13)
+  local_assessment: docs/local-orthography-fixer-assessment.md (t_e5290272, 2026-09-16)
+  canonical_rule_data: latinJ/orthography/rules.json v1.2.0 (= latin-audiobooks wt/t_9bc32c48 @ff3c7f3, ported into latinJ
+    commit ef185c4)
+  engine: latinJ/orthography/normalize.py + latinJ/scripts/normalize_orthography.py (CLI, commit 8c4e584)
+  b7bda42: Perfect-stem fix traiect -> trajecit, found in the acceptance run; backfilled into word_regex as 'traieci'->'trajeci'
+    (latinAudiobooks worktree t_d270dcf7 v1.2.0).
+  verification:
+  - 'scripts/battery3.py reproduces all latinJ test-suite assertion pairs through the real rules.json v1.2.0: 0 failures.'
+  - 'scripts/probe.py confirms each claimed example pair: all OK.'
+  - 'scripts/validate_yaml.py checks: YAML parses, every adopted rule has >= 1 positive and >= 1 negative example, and every
+    literal-output example reproduces through the engine; 0 mismatches.'
+  - rule_counts and all rule ids are pulled directly from rules.json by scripts/gen_ruleset_json.py — no hand transcription
+    of the rule arrays.
+  rule_counts: *id001
