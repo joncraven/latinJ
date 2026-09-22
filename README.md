@@ -76,11 +76,10 @@ unicode` the same pass emits `æ`/`Æ` instead of entities (`aether`→`æther`)
 The rule set (v1.2.0: `char_map` 30, `regex` 3, `word_regex` 70,
 `strip_combining` 2, `exceptions` 10) lives in `orthography/rules.json` — new
 corrections are data, not code.
-The formal rule-set document (`docs/orthography-ruleset.formal.yaml`, approved
-in t_d270dcf7) is the spec; every example pair it cites is pinned as a test
-(`tests/test_ruleset_examples.py`), and the parent deliverable `ruleset.json`
-carries the same five rule arrays (`exceptions`, `char_map`, `strip_combining`,
-`regex`, `word_regex`) as `orthography/rules.json` v1.2.0 — verified identical.
+A human-readable copy of the same five arrays lives in
+`docs/orthography-ruleset.formal.yaml`; it is the reference for adding rules, and
+every example pair it cites is pinned as a test in `tests/test_ruleset_examples.py`
+(same counts as `orthography/rules.json` v1.2.0) so the data and the doc cannot drift.
 
 ### Not done (by design)
 
