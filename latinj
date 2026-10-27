@@ -1,0 +1,4 @@
+#!/bin/sh
+# latinj — unformatted Latin in, corrected Latin out.
+# Thin shim so the tool works exactly like the old `perl clean.pl` one-liner.
+exec python3 "$(dirname "$0")/latinj.py" "$@"
