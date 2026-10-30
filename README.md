@@ -1,13 +1,16 @@
 # latinJ
 Utilities to update documents in Latin to use v, j, and æ for improved readibility
 
+## ***Input:*** Huius igitur iustitiae primum hoc munus est, ut ne cui quis noceat nisi lacessitus iniuria.
+## ***Output:*** Hujus igitur justitiæ primum hoc munus est, ut ne cui quis noceat nisi lacessitus injuria.
+
 ## Orthography fixer (`latinj` v2)
 
 `latinj` normalises raw Latin to the **latin.craven.fr** reading standard
-(the Latin.war / The Latin Library convention): consonantal `i→j`, the `ae`
+(following common neo-Latin conventions): consonantal `i→j`, the `ae`
 ligature (`&aelig;`/`&AElig;`), and clean handling of `oe`, macrons, and HTML.
 It is a Python port of the battle-tested orthography pipeline from the
-latin-audiobooks project (design rationale: decision memo
+latin.craven.fr project (design rationale: decision memo
 `orthography-compare-decision-memo.md`, 2026-09-19, option (b), in that
 sibling repo's `docs/`): the local pipeline is the base, Perl's rule
 knowledge backfilled **as data** into `orthography/rules.json`, the Perl
